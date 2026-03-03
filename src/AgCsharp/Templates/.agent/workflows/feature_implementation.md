@@ -221,37 +221,39 @@ public class CreateProductCommandHandler(
 }
 ```
 
-### Step 7: Create API Controller/Endpoints
+### Step 7: Create Presenter and Form
 
 ```csharp
-// Api/Controllers/ProductsController.cs
-[ApiController]
-[Route("api/[controller]")]
-public class ProductsController(ISender sender) : ControllerBase
+// Presentation/Views/IProductView.cs
+public interface IProductView
 {
-    [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken ct)
+    void ShowSuccess(string message);
+    void ShowError(string message);
+    event EventHandler<ProductSaveEventArgs> SaveRequested;
+}
+
+// Presentation/Presenters/ProductPresenter.cs
+public class ProductPresenter
+{
+    private readonly IProductView _view;
+    private readonly ISender _sender;
+
+    public ProductPresenter(IProductView view, ISender sender)
     {
-        var result = await sender.Send(new GetProductsQuery(), ct);
-        return Ok(result);
+        _view = view;
+        _sender = sender;
+        _view.SaveRequested += OnSaveRequested;
     }
 
-    [HttpGet("{id:int}")]
-    public async Task<IActionResult> GetById(int id, CancellationToken ct)
+    private async void OnSaveRequested(object sender, ProductSaveEventArgs e)
     {
-        var result = await sender.Send(new GetProductQuery(id), ct);
-        return result.IsSuccess ? Ok(result.Value) : NotFound();
-    }
-
-    [HttpPost]
-    public async Task<IActionResult> Create(CreateProductRequest request, CancellationToken ct)
-    {
-        var command = new CreateProductCommand(request.Name, request.Price, request.InitialStock);
-        var result = await sender.Send(command, ct);
+        var command = new CreateProductCommand(e.Name, e.Price, e.InitialStock);
+        var result = await _sender.Send(command);
         
-        return result.IsSuccess
-            ? CreatedAtAction(nameof(GetById), new { id = result.Value }, new { id = result.Value })
-            : BadRequest(result.Error);
+        if (result.IsSuccess)
+            _view.ShowSuccess($"Product Created (ID: {result.Value})");
+        else
+            _view.ShowError(result.Error);
     }
 }
 ```
@@ -265,6 +267,10 @@ services.AddScoped<IProductRepository, ProductRepository>();
 // Application/DependencyInjection.cs
 services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
 services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
+
+// Presentation/DependencyInjection.cs (Added in Program.cs Host builder)
+services.AddTransient<IProductView, ProductForm>();
+services.AddTransient<ProductPresenter>();
 ```
 
 ### Step 9: Write Tests
@@ -297,8 +303,6 @@ public class ProductTests
 - [ ] DTOs created (Request/Response)
 - [ ] Command/Query handlers implemented
 - [ ] Validators created
-- [ ] Controller/Endpoints added
-- [ ] Dependencies registered
-- [ ] Unit tests written
-- [ ] Integration tests written (optional)
-- [ ] API documentation updated
+- [ ] Controller/Endpoints added -> **Replaced with**: IView, Form, and Presenter created
+- [ ] Dependencies registered in Generic Host (UI Layer included)
+- [ ] Unit tests written (Testing the Presenter and Handlers via Mock Views)

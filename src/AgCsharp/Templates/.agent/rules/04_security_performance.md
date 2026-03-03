@@ -1,348 +1,164 @@
-# Security & Performance Rules
+# Security & Performance Rules (WinForms Desktop)
 
 ## Security
 
 ### Input Validation
 
-#### Always Validate User Input
+#### Always Validate User Input at the UI and Application Layers
 ```csharp
-// Use FluentValidation for complex validation
-public class CreateOrderValidator : AbstractValidator<CreateOrderCommand>
+// UI Layer Example (WinForms ErrorProvider)
+private void btnSave_Click(object sender, EventArgs e)
 {
-    public CreateOrderValidator()
+    errorProvider.Clear();
+    if (string.IsNullOrWhiteSpace(txtName.Text))
     {
-        RuleFor(x => x.CustomerId)
-            .GreaterThan(0)
-            .WithMessage("Invalid customer ID");
-
-        RuleFor(x => x.Items)
-            .NotEmpty()
-            .WithMessage("Order must have at least one item");
-
-        RuleForEach(x => x.Items).ChildRules(item =>
-        {
-            item.RuleFor(x => x.Quantity)
-                .GreaterThan(0)
-                .LessThanOrEqualTo(100);
-        });
+        errorProvider.SetError(txtName, "Name is required.");
+        return;
     }
+    // Proceed to Presenter/Command...
 }
 
-// Use Data Annotations for simple validation
-public record CreateCustomerRequest
+// Application Layer (FluentValidation)
+public class CreateCustomerValidator : AbstractValidator<CreateCustomerCommand>
 {
-    [Required]
-    [StringLength(100, MinimumLength = 2)]
-    public string Name { get; init; } = default!;
-
-    [Required]
-    [EmailAddress]
-    public string Email { get; init; } = default!;
+    public CreateCustomerValidator()
+    {
+        RuleFor(x => x.Name).NotEmpty().MaximumLength(100);
+        RuleFor(x => x.Email).EmailAddress();
+    }
 }
 ```
 
-### SQL Injection Prevention
+### Data Protection & Secrets storage
 
-#### NEVER Use String Concatenation for SQL
+#### Securing Local Secrets uses Windows DPAPI
+Unlike Web APIs, desktop applications run on the user's machine and cannot safely embed secrets (like database passwords or API keys) in `appsettings.json` in plaintext.
+
 ```csharp
-// ❌ NEVER DO THIS - SQL Injection vulnerable
-var sql = $"SELECT * FROM Customers WHERE Name = '{name}'";
+// Example using Microsoft.AspNetCore.DataProtection
+using Microsoft.AspNetCore.DataProtection;
 
-// ✅ Use parameterized queries
-var customers = await context.Customers
-    .Where(c => c.Name == name)
-    .ToListAsync();
+var destFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyApp\\Keys");
+var services = new ServiceCollection();
+services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(destFolder))
+    .SetApplicationName("MyApp");
+var provider = services.BuildServiceProvider();
+var protector = provider.GetDataProtector("MyApp.SecretStore");
 
-// ✅ If raw SQL needed, use parameters
-var customers = await context.Customers
-    .FromSqlInterpolated($"SELECT * FROM Customers WHERE Name = {name}")
-    .ToListAsync();
+// Encrypt
+string protectedData = protector.Protect("SensitiveConnectionString");
 
-// ✅ With Dapper - always use parameters
-var customers = await connection.QueryAsync<Customer>(
-    "SELECT * FROM Customers WHERE Name = @Name",
-    new { Name = name });
+// Decrypt
+string plainData = protector.Unprotect(protectedData);
 ```
 
 ### Authentication & Authorization
 
-#### Secure Endpoints
-```csharp
-// Require authentication
-[Authorize]
-[ApiController]
-[Route("api/[controller]")]
-public class OrdersController : ControllerBase
-{
-    // Require specific role
-    [Authorize(Roles = "Admin")]
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> Delete(int id) { }
+#### Windows Authentication
+Desktop apps within a corporate domain should leverage Windows Integrated Authentication.
 
-    // Require specific policy
-    [Authorize(Policy = "CanManageOrders")]
-    [HttpPut("{id}")]
-    public async Task<IActionResult> Update(int id, UpdateOrderRequest request) { }
+```csharp
+// Retrieve current Windows Identity
+using System.Security.Principal;
+
+WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
+WindowsPrincipal principal = new WindowsPrincipal(currentIdentity);
+
+if (principal.IsInRole(WindowsBuiltInRole.Administrator))
+{
+    // Enable admin features in UI
+    adminPanel.Visible = true;
 }
-
-// Configure policies in Program.cs
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("CanManageOrders", policy =>
-        policy.RequireClaim("permission", "orders:manage"));
-});
-```
-
-#### Secure Sensitive Data
-```csharp
-// Use secrets management
-builder.Configuration.AddAzureKeyVault(
-    new Uri(builder.Configuration["KeyVault:Url"]!),
-    new DefaultAzureCredential());
-
-// Never log sensitive data
-public async Task<IActionResult> Login(LoginRequest request)
-{
-    _logger.LogInformation("Login attempt for user {Email}", request.Email);
-    // ❌ Never log passwords or tokens
-    // _logger.LogInformation("Password: {Password}", request.Password);
-}
-
-// Hash passwords - use built-in Identity or BCrypt
-var hashedPassword = BCrypt.Net.BCrypt.HashPassword(password);
-var isValid = BCrypt.Net.BCrypt.Verify(password, hashedPassword);
-```
-
-### CORS Configuration
-```csharp
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("Production", policy =>
-    {
-        policy.WithOrigins("https://myapp.com", "https://admin.myapp.com")
-              .WithMethods("GET", "POST", "PUT", "DELETE")
-              .WithHeaders("Content-Type", "Authorization")
-              .AllowCredentials();
-    });
-});
-
-// ❌ Avoid in production
-// policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
-```
-
-### Rate Limiting
-```csharp
-builder.Services.AddRateLimiter(options =>
-{
-    options.AddFixedWindowLimiter("api", limiterOptions =>
-    {
-        limiterOptions.Window = TimeSpan.FromMinutes(1);
-        limiterOptions.PermitLimit = 100;
-        limiterOptions.QueueLimit = 10;
-    });
-
-    options.AddTokenBucketLimiter("authenticated", limiterOptions =>
-    {
-        limiterOptions.TokenLimit = 1000;
-        limiterOptions.ReplenishmentPeriod = TimeSpan.FromMinutes(1);
-        limiterOptions.TokensPerPeriod = 100;
-    });
-});
-
-app.UseRateLimiter();
-
-[EnableRateLimiting("api")]
-public class PublicController : ControllerBase { }
 ```
 
 ---
 
 ## Performance
 
-### Async/Await Best Practices
+### Responsive UI and Threading
 
-#### Always Use Async for I/O Operations
+#### Never Block the Main UI Thread
+WinForms uses a single UI thread to process the message loop. Heavy operations (DB queries, file I/O, network requests) must run asynchronously to prevent the application from freezing.
+
 ```csharp
-// ✅ Proper async usage
-public async Task<Customer?> GetCustomerAsync(int id, CancellationToken ct)
+// ✅ Proper async usage in Presenter/Form
+public async Task LoadDataAsync()
 {
-    return await _context.Customers
-        .FirstOrDefaultAsync(c => c.Id == id, ct);
+    try 
+    {
+        // UI thread is freed while awaiting
+        var data = await _repository.GetDataAsync();
+        
+        // Continuation happens on UI context automatically if awaited from a UI event
+        dataGridView.DataSource = data;
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show("Failed to load data.");
+    }
 }
 
-// ❌ Don't block on async
-public Customer? GetCustomer(int id)
+// ❌ DON'T DO THIS - Freezes the app
+public void LoadData()
 {
-    // This can cause deadlocks!
-    return _context.Customers
-        .FirstOrDefaultAsync(c => c.Id == id).Result;
-}
-
-// ✅ Use ConfigureAwait(false) in library code
-public async Task<string> GetDataAsync()
-{
-    var response = await _httpClient.GetAsync(url).ConfigureAwait(false);
-    return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+    var data = _repository.GetDataAsync().Result; // Deadlock potential and freezes UI
+    dataGridView.DataSource = data;
 }
 ```
 
-#### Parallel Operations
+#### Safe Cross-Thread UI Updates
+If a background thread (e.g., `Task.Run()`, or `System.Timers.Timer`) needs to update UI controls, you must marshall the call back to the UI thread using `Invoke` or `BeginInvoke`.
+
 ```csharp
-// ✅ Run independent operations in parallel
-public async Task<DashboardData> GetDashboardAsync(CancellationToken ct)
+public void UpdateProgress(int percent)
 {
-    var customersTask = _customerService.GetCountAsync(ct);
-    var ordersTask = _orderService.GetRecentAsync(ct);
-    var revenueTask = _revenueService.GetTotalAsync(ct);
-
-    await Task.WhenAll(customersTask, ordersTask, revenueTask);
-
-    return new DashboardData(
-        CustomerCount: await customersTask,
-        RecentOrders: await ordersTask,
-        TotalRevenue: await revenueTask);
+    if (progressBar.InvokeRequired)
+    {
+        progressBar.BeginInvoke(new Action(() => UpdateProgress(percent)));
+        return;
+    }
+    progressBar.Value = percent;
 }
 ```
 
-### Database Performance
+### Database Performance (Local SQLite / EF Core)
 
-#### Efficient Querying
+#### Connection Management
+For desktop caching or local DBs (SQLite/LocalDB), avoid keeping `DbContext` open indefinitely. Instantiate it per unit of work (Scope).
+
 ```csharp
-// ✅ Project only needed columns
-var customers = await _context.Customers
-    .Select(c => new CustomerDto(c.Id, c.Name, c.Email))
-    .ToListAsync();
-
-// ❌ Don't load entire entities when not needed
-var customers = await _context.Customers.ToListAsync();
-
-// ✅ Use pagination
-var customers = await _context.Customers
-    .OrderBy(c => c.Name)
-    .Skip((page - 1) * pageSize)
-    .Take(pageSize)
-    .ToListAsync();
-
-// ✅ Use AsNoTracking for read-only queries
-var customers = await _context.Customers
-    .AsNoTracking()
-    .Where(c => c.Status == Status.Active)
-    .ToListAsync();
+// In a bounded operation
+using (var scope = _serviceProvider.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    // Query local DB
+    var uiData = await context.Customers.AsNoTracking().ToListAsync();
+    return uiData;
+}
 ```
 
 #### Avoid N+1 Queries
 ```csharp
-// ❌ N+1 problem - executes query for each order
-var orders = await _context.Orders.ToListAsync();
-foreach (var order in orders)
-{
-    var customer = await _context.Customers.FindAsync(order.CustomerId);
-}
-
-// ✅ Use eager loading
+// ✅ Use eager loading to prevent multiple round trips
 var orders = await _context.Orders
     .Include(o => o.Customer)
     .ToListAsync();
-
-// ✅ Or use projection
-var orders = await _context.Orders
-    .Select(o => new OrderDto(
-        o.Id,
-        o.Total,
-        o.Customer.Name))
-    .ToListAsync();
 ```
 
-#### Database Indexing
-```csharp
-// In Entity Configuration
-public class CustomerConfiguration : IEntityTypeConfiguration<Customer>
-{
-    public void Configure(EntityTypeBuilder<Customer> builder)
-    {
-        // Index on frequently queried columns
-        builder.HasIndex(c => c.Email).IsUnique();
-        builder.HasIndex(c => c.Status);
-        
-        // Composite index for common query patterns
-        builder.HasIndex(c => new { c.Status, c.CreatedAt });
-    }
-}
-```
+### Memory Management and GDI+ Leaks
 
-### Caching
-
-#### Use Response Caching
-```csharp
-[HttpGet]
-[ResponseCache(Duration = 60, VaryByQueryKeys = ["category"])]
-public async Task<IActionResult> GetProducts(string category)
-{
-    return Ok(await _productService.GetByCategoryAsync(category));
-}
-```
-
-#### Use Distributed Caching
-```csharp
-public class CachedProductService(
-    IProductRepository repository,
-    IDistributedCache cache)
-{
-    public async Task<Product?> GetByIdAsync(int id, CancellationToken ct)
-    {
-        var cacheKey = $"product:{id}";
-        
-        var cached = await cache.GetStringAsync(cacheKey, ct);
-        if (cached != null)
-            return JsonSerializer.Deserialize<Product>(cached);
-
-        var product = await repository.GetByIdAsync(id, ct);
-        if (product != null)
-        {
-            await cache.SetStringAsync(
-                cacheKey,
-                JsonSerializer.Serialize(product),
-                new DistributedCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
-                },
-                ct);
-        }
-
-        return product;
-    }
-}
-```
-
-### Memory Management
+WinForms heavily relies on GDI+ for rendering. Failing to dispose of GDI objects (Fonts, Brushes, Pens, Bitmaps) will cause a memory leak and eventually exhaust handles, crashing the app.
 
 ```csharp
-// ✅ Use object pooling for frequent allocations
-private static readonly ObjectPool<StringBuilder> StringBuilderPool =
-    ObjectPool.Create<StringBuilder>();
-
-public string BuildReport(IEnumerable<ReportItem> items)
+// ✅ Always dispose of GDI objects created manually
+private void pbImage_Paint(object sender, PaintEventArgs e)
 {
-    var sb = StringBuilderPool.Get();
-    try
+    using (Pen myPen = new Pen(Color.Red, 2))
+    using (SolidBrush myBrush = new SolidBrush(Color.Blue))
     {
-        foreach (var item in items)
-            sb.AppendLine(item.ToString());
-        return sb.ToString();
-    }
-    finally
-    {
-        sb.Clear();
-        StringBuilderPool.Return(sb);
-    }
-}
-
-// ✅ Use Span<T> for high-performance scenarios
-public static int CountDigits(ReadOnlySpan<char> input)
-{
-    int count = 0;
-    foreach (var c in input)
-        if (char.IsDigit(c)) count++;
-    return count;
+        e.Graphics.DrawRectangle(myPen, 10, 10, 50, 50);
+        e.Graphics.FillEllipse(myBrush, 10, 10, 50, 50);
+    } // Disposed properly
 }
 ```

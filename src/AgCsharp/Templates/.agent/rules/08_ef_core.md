@@ -1,6 +1,8 @@
-# Entity Framework Core
+# Entity Framework Core (WinForms Desktop)
 
 ## DbContext Configuration
+
+In Desktop Applications using local databases (like SQLite or LocalDB), EF Core requires specific threading and connection lifecycle management considerations that differ heavily from the web context.
 
 ### Basic Setup
 ```csharp
@@ -13,57 +15,25 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Order> Orders => Set<Order>();
-    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Apply all configurations from assembly
-        modelBuilder.ApplyConfigurationsFromAssembly(
-            typeof(ApplicationDbContext).Assembly);
-        
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
         base.OnModelCreating(modelBuilder);
-    }
-
-    public override async Task<int> SaveChangesAsync(
-        CancellationToken cancellationToken = default)
-    {
-        // Auto-set audit fields
-        foreach (var entry in ChangeTracker.Entries<BaseEntity>())
-        {
-            switch (entry.State)
-            {
-                case EntityState.Added:
-                    entry.Entity.CreatedAt = DateTime.UtcNow;
-                    break;
-                case EntityState.Modified:
-                    entry.Entity.UpdatedAt = DateTime.UtcNow;
-                    break;
-            }
-        }
-
-        return await base.SaveChangesAsync(cancellationToken);
     }
 }
 ```
 
 ### Registration in Program.cs
-```csharp
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-{
-    options.UseSqlServer(
-        builder.Configuration.GetConnectionString("Default"),
-        sqlOptions =>
-        {
-            sqlOptions.EnableRetryOnFailure(
-                maxRetryCount: 3,
-                maxRetryDelay: TimeSpan.FromSeconds(30),
-                errorNumbersToAdd: null);
-            
-            sqlOptions.CommandTimeout(30);
-            sqlOptions.MigrationsAssembly("MyApp.Infrastructure");
-        });
+Instead of relying purely on scoped lifetimes (which are effectively singletons if bounded to the main form), we register `IDbContextFactory` to easily generate short-lived contexts on demand, allowing thread-safe UI interactions.
 
-    // Enable sensitive data logging only in development
+```csharp
+// Program.cs
+builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+{
+    // SQLite used for local desktop DB
+    options.UseSqlite(builder.Configuration.GetConnectionString("LocalDatabase"));
+
     if (builder.Environment.IsDevelopment())
     {
         options.EnableSensitiveDataLogging();
@@ -72,287 +42,125 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 });
 ```
 
-## Entity Configuration
+## DbContext Lifetime & Service Scope
+**Warning:** WinForms does not have a "per-request" DI scope by default. If you resolve a `DbContext` into a Presenter, it will live as long as the Presenter (often the whole app lifespan). This causes the `ChangeTracker` to bloat, consume memory, and prevents multiple UI components from writing concurrently.
 
-### Fluent API Configuration
+### Best Practice: DbContextFactory for Operations
+```csharp
+public class CustomerRepository : ICustomerRepository
+{
+    private readonly IDbContextFactory<ApplicationDbContext> _contextFactory;
+
+    public CustomerRepository(IDbContextFactory<ApplicationDbContext> contextFactory)
+    {
+        _contextFactory = contextFactory;
+    }
+
+    public async Task<List<Customer>> GetAllAsync()
+    {
+        // 1. Create a short-lived context
+        using var context = await _contextFactory.CreateDbContextAsync();
+        
+        // 2. Disable tracking for Read-Only operations speeds up rendering DataGridViews
+        return await context.Customers.AsNoTracking().ToListAsync();
+    }
+
+    public async Task AddCustomerAsync(Customer customer)
+    {
+        using var context = await _contextFactory.CreateDbContextAsync();
+        context.Customers.Add(customer);
+        await context.SaveChangesAsync();
+    }
+}
+```
+
+### Alternative Practice: Creating Service Scopes per Operation
+If using MediatR (`ISender`), it creates its handlers inside a transient scope already if properly configured, but you must ensure you wrap long-running operations in their own Scope if invoking directly from a Form.
+
+```csharp
+// Helper in Presenter
+public async Task RefreshGridAsync()
+{
+    // Create scope explicitly
+    using var scope = _serviceProvider.CreateScope();
+    var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+    
+    // DbContext will be disposed when scope ends
+    var data = await sender.Send(new GetCustomersQuery());
+    _view.UpdateGrid(data);
+}
+```
+
+## Entity Configuration
+(Same principles as Web. Use Fluent API)
+
 ```csharp
 public class CustomerConfiguration : IEntityTypeConfiguration<Customer>
 {
     public void Configure(EntityTypeBuilder<Customer> builder)
     {
-        // Table
         builder.ToTable("Customers");
-        
-        // Primary key
         builder.HasKey(c => c.Id);
-        
-        // Properties
-        builder.Property(c => c.Name)
-            .IsRequired()
-            .HasMaxLength(100);
-        
-        builder.Property(c => c.Email)
-            .IsRequired()
-            .HasMaxLength(255);
-        
-        // Value Object (Owned Type)
-        builder.OwnsOne(c => c.Address, address =>
-        {
-            address.Property(a => a.Street).HasMaxLength(200);
-            address.Property(a => a.City).HasMaxLength(100);
-            address.Property(a => a.PostalCode).HasMaxLength(20);
-        });
-        
-        // Indexes
+        builder.Property(c => c.Name).IsRequired().HasMaxLength(100);
         builder.HasIndex(c => c.Email).IsUnique();
-        builder.HasIndex(c => c.Status);
-        
-        // Relationships
-        builder.HasMany(c => c.Orders)
-            .WithOne(o => o.Customer)
-            .HasForeignKey(o => o.CustomerId)
-            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 ```
 
-## Query Optimization
+## Query Optimization for UI Responsiveness
 
 ### Use Projections
+Do not pull whole entities into a `BindingList` if you only need 3 columns in the DataGridView.
 ```csharp
-// ✅ Good - Only select needed columns
+// ✅ Good - Maps directly to a DTO for DataGridView
 public async Task<List<CustomerDto>> GetCustomersAsync()
 {
-    return await _context.Customers
+    using var context = await _contextFactory.CreateDbContextAsync();
+    return await context.Customers
         .Select(c => new CustomerDto(c.Id, c.Name, c.Email))
         .ToListAsync();
 }
-
-// ❌ Bad - Loads entire entity
-public async Task<List<CustomerDto>> GetCustomersAsync()
-{
-    var customers = await _context.Customers.ToListAsync();
-    return customers.Select(c => new CustomerDto(c.Id, c.Name, c.Email)).ToList();
-}
 ```
 
-### Use AsNoTracking for Read-Only Queries
-```csharp
-// ✅ No change tracking overhead
-public async Task<Customer?> GetByIdReadOnlyAsync(int id)
-{
-    return await _context.Customers
-        .AsNoTracking()
-        .FirstOrDefaultAsync(c => c.Id == id);
-}
+### Use BindingSource / BindingList for the UI
+Even if the DB query is fast, returning raw lists isn't ideal for Two-Way data binding. Instead, map the result.
 
-// For DbContext-wide read-only
-builder.Services.AddDbContext<ReadOnlyDbContext>(options =>
-{
-    options.UseSqlServer(connectionString)
-           .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
-});
+```csharp
+// Presenter receiving a list, mapping to a BindingList for the View
+var customers = await _repository.GetAllAsync();
+var bindingList = new BindingList<CustomerDto>(customers);
+_view.BindCustomers(bindingList);
 ```
 
 ### Avoid N+1 Queries
 ```csharp
-// ❌ N+1 Problem
-var orders = await _context.Orders.ToListAsync();
-foreach (var order in orders)
-{
-    // Each iteration executes a query
-    Console.WriteLine(order.Customer.Name);
-}
-
 // ✅ Eager Loading
-var orders = await _context.Orders
+var orders = await context.Orders
     .Include(o => o.Customer)
     .Include(o => o.Items)
     .ToListAsync();
+```
 
-// ✅ Explicit Loading (when needed conditionally)
-var order = await _context.Orders.FindAsync(id);
-if (order != null && needCustomer)
+## Migrations in Desktop Apps
+
+Desktop applications usually do not run `dotnet ef database update` on deployment. You must run migrations automatically at startup the first time the app is launched on a new client machine or after an update.
+
+```csharp
+// Program.cs - Apply Migrations Automatically
+var host = builder.Build();
+
+using (var scope = host.Services.CreateScope())
 {
-    await _context.Entry(order)
-        .Reference(o => o.Customer)
-        .LoadAsync();
+    var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    // Apply pending migrations directly to local SQLite DB
+    context.Database.Migrate(); 
 }
 
-// ✅ Split Query for large collections
-var orders = await _context.Orders
-    .Include(o => o.Items)
-    .AsSplitQuery()
-    .ToListAsync();
+Application.Run(host.Services.GetRequiredService<MainForm>());
 ```
 
-### Efficient Filtering
-```csharp
-// ✅ Filter in database
-var activeCustomers = await _context.Customers
-    .Where(c => c.Status == CustomerStatus.Active)
-    .ToListAsync();
-
-// ❌ Don't filter in memory
-var activeCustomers = (await _context.Customers.ToListAsync())
-    .Where(c => c.Status == CustomerStatus.Active)
-    .ToList();
-```
-
-## Migrations
-
-### Create Migration
+### Creating Migrations locally
 ```bash
-# From solution root
-dotnet ef migrations add InitialCreate -p src/MyApp.Infrastructure -s src/MyApp.Api
-
-# With context specification
-dotnet ef migrations add AddCustomerTable \
-    --context ApplicationDbContext \
-    --project src/MyApp.Infrastructure \
-    --startup-project src/MyApp.Api
-```
-
-### Apply Migration
-```bash
-# Update database
-dotnet ef database update -p src/MyApp.Infrastructure -s src/MyApp.Api
-
-# Generate SQL script
-dotnet ef migrations script -p src/MyApp.Infrastructure -s src/MyApp.Api -o migration.sql
-
-# Generate idempotent script (safe to run multiple times)
-dotnet ef migrations script --idempotent -o migration.sql
-```
-
-### Migration Best Practices
-```csharp
-// Custom migration for data transformation
-public partial class AddFullNameColumn : Migration
-{
-    protected override void Up(MigrationBuilder migrationBuilder)
-    {
-        migrationBuilder.AddColumn<string>(
-            name: "FullName",
-            table: "Customers",
-            type: "nvarchar(200)",
-            maxLength: 200,
-            nullable: true);
-
-        // Populate from existing data
-        migrationBuilder.Sql(
-            "UPDATE Customers SET FullName = FirstName + ' ' + LastName");
-
-        // Make non-nullable after population
-        migrationBuilder.AlterColumn<string>(
-            name: "FullName",
-            table: "Customers",
-            type: "nvarchar(200)",
-            maxLength: 200,
-            nullable: false);
-    }
-
-    protected override void Down(MigrationBuilder migrationBuilder)
-    {
-        migrationBuilder.DropColumn(name: "FullName", table: "Customers");
-    }
-}
-```
-
-## Data Seeding
-
-```csharp
-public class CustomerConfiguration : IEntityTypeConfiguration<Customer>
-{
-    public void Configure(EntityTypeBuilder<Customer> builder)
-    {
-        // ... other configuration
-
-        // Seed data
-        builder.HasData(
-            new Customer { Id = 1, Name = "System", Email = "system@example.com" },
-            new Customer { Id = 2, Name = "Admin", Email = "admin@example.com" }
-        );
-    }
-}
-
-// Or in DbContext
-protected override void OnModelCreating(ModelBuilder modelBuilder)
-{
-    modelBuilder.Entity<CustomerStatus>().HasData(
-        Enum.GetValues<CustomerStatusEnum>()
-            .Select(e => new CustomerStatus 
-            { 
-                Id = (int)e, 
-                Name = e.ToString() 
-            }));
-}
-```
-
-## Unit of Work Pattern
-
-```csharp
-public interface IUnitOfWork
-{
-    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
-    Task BeginTransactionAsync(CancellationToken cancellationToken = default);
-    Task CommitAsync(CancellationToken cancellationToken = default);
-    Task RollbackAsync(CancellationToken cancellationToken = default);
-}
-
-public class UnitOfWork(ApplicationDbContext context) : IUnitOfWork
-{
-    private IDbContextTransaction? _transaction;
-
-    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-    {
-        return await context.SaveChangesAsync(cancellationToken);
-    }
-
-    public async Task BeginTransactionAsync(CancellationToken cancellationToken = default)
-    {
-        _transaction = await context.Database.BeginTransactionAsync(cancellationToken);
-    }
-
-    public async Task CommitAsync(CancellationToken cancellationToken = default)
-    {
-        await context.SaveChangesAsync(cancellationToken);
-        if (_transaction != null)
-        {
-            await _transaction.CommitAsync(cancellationToken);
-            await _transaction.DisposeAsync();
-            _transaction = null;
-        }
-    }
-
-    public async Task RollbackAsync(CancellationToken cancellationToken = default)
-    {
-        if (_transaction != null)
-        {
-            await _transaction.RollbackAsync(cancellationToken);
-            await _transaction.DisposeAsync();
-            _transaction = null;
-        }
-    }
-}
-```
-
-## DbContext Lifetime
-
-```csharp
-// ✅ Scoped (default) - One instance per request
-builder.Services.AddDbContext<ApplicationDbContext>(options => ...);
-
-// For background services, create scope manually
-public class OrderProcessingService(IServiceScopeFactory scopeFactory)
-{
-    public async Task ProcessAsync()
-    {
-        using var scope = scopeFactory.CreateScope();
-        var context = scope.ServiceProvider
-            .GetRequiredService<ApplicationDbContext>();
-        
-        // Use context...
-    }
-}
+# Standard creation
+dotnet ef migrations add InitialCreate -p src/MyApp.Infrastructure -s src/MyApp.Presentation
 ```

@@ -69,8 +69,8 @@ System.InvalidOperationException: Sequence contains no elements
 ```
 ┌─────────────────────────────────────────┐
 │             Presentation                 │
-│  Controllers, Middleware, Filters        │
-│  → Check: Request/Response, Auth         │
+│  Forms, Presenters, UserControls         │
+│  → Check: Cross-thread updates, GDI+     │
 ├─────────────────────────────────────────┤
 │             Application                  │
 │  Handlers, Services, Validators          │
@@ -153,6 +153,24 @@ var result = GetDataAsync().Result; // 💥 deadlock risk
 var result = await GetDataAsync();
 ```
 
+#### Cross-Thread Operation
+```csharp
+// Problem (Background worker updating UI)
+Task.Run(() => {
+    var data = FetchData();
+    txtResult.Text = data; // 💥 Cross-thread operation exception
+});
+
+// Solution
+Task.Run(() => {
+    var data = FetchData();
+    if (txtResult.InvokeRequired)
+        txtResult.Invoke(new Action(() => txtResult.Text = data));
+    else
+        txtResult.Text = data;
+});
+```
+
 #### Race Condition
 ```csharp
 // Problem
@@ -162,6 +180,25 @@ await _repo.CreateAsync(user); // 💥 another request might create between chec
 
 // Solution - Use unique constraint + catch exception
 // Or use transaction with proper isolation
+```
+
+#### GDI+ Memory Leak
+```csharp
+// Problem (Creates a new brush every paint event but doesn't dispose)
+private void panel1_Paint(object sender, PaintEventArgs e)
+{
+    SolidBrush brush = new SolidBrush(Color.Red);
+    e.Graphics.FillRectangle(brush, 0, 0, 100, 100);
+} // 💥 Brush is not disposed = handle leak
+
+// Solution
+private void panel1_Paint(object sender, PaintEventArgs e)
+{
+    using (SolidBrush brush = new SolidBrush(Color.Red))
+    {
+        e.Graphics.FillRectangle(brush, 0, 0, 100, 100);
+    }
+}
 ```
 
 ---

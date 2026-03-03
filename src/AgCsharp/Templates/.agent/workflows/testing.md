@@ -29,12 +29,12 @@ Systematic process for writing and running tests.
 - [ ] Edge cases
 
 ### Should Test
-- [ ] API endpoints (integration)
+- [ ] View Presenters (using Mock Views)
 - [ ] Repository queries
 - [ ] External service integration
 
 ### Skip Testing
-- [ ] Simple property accessors
+- [ ] WinForms control visual state (rely on Presenter logic instead)
 - [ ] Framework code
 - [ ] Auto-generated code
 
@@ -181,59 +181,53 @@ public class GetOrderQueryTests : IDisposable
 
 ---
 
-## Step 4: Write Integration Tests
+## Step 4: Write Presenter Tests
 
-### WebApplicationFactory
+### Testing Presenter Logic with Mock Views
 ```csharp
-public class OrdersApiTests : IClassFixture<WebApplicationFactory<Program>>
+public class CustomerListPresenterTests
 {
-    private readonly HttpClient _client;
+    private readonly Mock<ICustomerListView> _viewMock;
+    private readonly Mock<ISender> _senderMock;
+    private readonly CustomerListPresenter _presenter;
 
-    public OrdersApiTests(WebApplicationFactory<Program> factory)
+    public CustomerListPresenterTests()
     {
-        _client = factory.WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureServices(services =>
-            {
-                // Replace real database with in-memory
-                var descriptor = services.SingleOrDefault(
-                    d => d.ServiceType == typeof(DbContextOptions<ApplicationDbContext>));
-                services.Remove(descriptor!);
-                
-                services.AddDbContext<ApplicationDbContext>(options =>
-                    options.UseInMemoryDatabase("TestDb"));
-            });
-        }).CreateClient();
+        _viewMock = new Mock<ICustomerListView>();
+        _senderMock = new Mock<ISender>();
+        _presenter = new CustomerListPresenter(_viewMock.Object, _senderMock.Object);
     }
 
     [Fact]
-    public async Task CreateOrder_ValidRequest_ReturnsCreated()
+    public void LoadCustomers_Success_BindsDataToView()
     {
         // Arrange
-        var request = new CreateOrderRequest(Guid.NewGuid());
-        var content = new StringContent(
-            JsonSerializer.Serialize(request),
-            Encoding.UTF8,
-            "application/json");
+        var customers = new List<CustomerDto> { new CustomerDto(1, "Test") };
+        _senderMock.Setup(s => s.Send(It.IsAny<GetCustomersQuery>(), default))
+                   .ReturnsAsync(Result.Success(customers));
 
         // Act
-        var response = await _client.PostAsync("/api/orders", content);
+        // Trigger the event that the presenter subscribed to
+        _viewMock.Raise(v => v.LoadRequested += null, EventArgs.Empty);
 
         // Assert
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        
-        var order = await response.Content.ReadFromJsonAsync<OrderDto>();
-        Assert.NotNull(order);
+        _viewMock.Verify(v => v.SetLoadingState(true), Times.Once);
+        _viewMock.Verify(v => v.BindCustomers(It.Is<BindingList<CustomerDto>>(list => list.Count == 1)), Times.Once);
+        _viewMock.Verify(v => v.SetLoadingState(false), Times.Once);
     }
 
     [Fact]
-    public async Task GetOrder_NotFound_Returns404()
+    public void LoadCustomers_Failure_ShowsErrorOnView()
     {
+        // Arrange
+        _senderMock.Setup(s => s.Send(It.IsAny<GetCustomersQuery>(), default))
+                   .ReturnsAsync(Result.Failure<List<CustomerDto>>("Database error"));
+
         // Act
-        var response = await _client.GetAsync($"/api/orders/{Guid.NewGuid()}");
+        _viewMock.Raise(v => v.LoadRequested += null, EventArgs.Empty);
 
         // Assert
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        _viewMock.Verify(v => v.ShowError("Database error"), Times.Once);
     }
 }
 ```
@@ -285,7 +279,7 @@ reportgenerator \
 | Domain | 90%+ |
 | Application | 80%+ |
 | Infrastructure | 60%+ |
-| API | 70%+ |
+| Presenters | 80%+ |
 
 ---
 
@@ -306,18 +300,19 @@ tests/
 │   │       └── GetOrderQueryTests.cs
 │   └── Validators/
 │       └── CreateOrderValidatorTests.cs
-└── Api.IntegrationTests/
-    ├── OrdersApiTests.cs
-    └── CustomersApiTests.cs
+└── Presentation.UnitTests/
+    ├── Presenters/
+    │   └── ProductPresenterTests.cs
+    └── Views/
+        └── (Minimal to no tests here, mocked instead)
 ```
 
 ---
 
 ## Checklist
 - [ ] Unit tests for domain logic
-- [ ] Handler tests with mocks
+- [ ] Command/Query Handler tests with mocks
 - [ ] Validator tests
-- [ ] Integration tests for API
+- [ ] UI Presenter tests with Mock Views
 - [ ] Test coverage > 80% for critical paths
 - [ ] All tests pass
-- [ ] Tests run in CI/CD pipeline
