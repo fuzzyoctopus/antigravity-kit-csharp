@@ -1,5 +1,4 @@
----
-description: A step-by-step workflow for implementing new features from database to API using Clean Architecture patterns. Covers defining domain entities with business logic and domain events, creating repository interfaces and implementations, configuring Entity Framework Core with migrations, creating request/response DTOs, implementing commands and queries with MediatR handlers and FluentValidation validators, building API controllers, registering dependencies, and writing unit tests. Includes complete code examples following C# best practices and a comprehensive implementation checklist.
+description: A step-by-step workflow for implementing new features from database to UI using Clean Architecture patterns. Covers defining domain entities with business logic and domain events, creating repository interfaces and implementations, configuring Entity Framework Core with migrations, creating request/response DTOs, implementing commands and queries with MediatR handlers and FluentValidation validators, building WinForms presenters and views, registering dependencies, and writing unit tests. Includes complete code examples following C# best practices and a comprehensive implementation checklist.
 ---
 
 # Workflow: Feature Implementation

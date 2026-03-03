@@ -1,5 +1,4 @@
----
-description: A comprehensive code review workflow providing a systematic checklist for reviewing code before merging to main branch. Covers naming conventions, architecture design (Single Responsibility, Dependency Injection, layer boundaries), error handling best practices, security considerations (SQL injection prevention, authorization, input validation), performance optimization (async/await, N+1 queries, indexing), testing standards (AAA pattern, edge cases), API design principles, and database migration reviews. Includes severity levels for review comments (Blocker, Major, Minor, Nitpick, Suggestion) with templates, and defines clear approval criteria.
+description: A comprehensive code review workflow providing a systematic checklist for reviewing code before merging to main branch. Covers naming conventions, architecture design (Single Responsibility, Dependency Injection, layer boundaries), error handling best practices, security considerations (SQL injection prevention, authorization, input validation), performance optimization (async/await, N+1 queries, indexing), testing standards (AAA pattern, edge cases), Presenter/View design principles, and database migration reviews. Includes severity levels for review comments (Blocker, Major, Minor, Nitpick, Suggestion) with templates, and defines clear approval criteria.
 ---
 
 # Workflow: Code Review
@@ -46,14 +45,14 @@ if (customer.Status == CustomerStatus.Active) { }
 - [ ] **Proper abstraction level** - not over-engineered
 
 ```csharp
-// ❌ Bad - Repository in Controller
-public class OrderController
+// ❌ Bad - Repository in Form
+public partial class OrderForm : Form
 {
     private readonly ApplicationDbContext _context; // Direct DB access
 }
 
 // ✅ Good - Proper layering
-public class OrderController
+public class OrderPresenter
 {
     private readonly ISender _sender; // Uses MediatR
 }
@@ -87,7 +86,7 @@ catch (ExternalServiceException ex)
 
 - [ ] **No SQL injection** - parameterized queries only
 - [ ] **No sensitive data in logs** (passwords, tokens, PII)
-- [ ] **Authorization checks** on endpoints
+- [ ] **Authorization checks** on commands/actions
 - [ ] **Input validation** on all user input
 - [ ] **No hardcoded secrets**
 
@@ -143,13 +142,13 @@ public async Task CreateOrder_ShouldFail_WhenCustomerIsInactive()
 }
 ```
 
-### 7. API Design
+### 7. Internal Service Design
 
-- [ ] **Correct HTTP methods** (GET for reads, POST for creates, etc.)
-- [ ] **Appropriate status codes** returned
-- [ ] **Consistent response format** (ProblemDetails for errors)
-- [ ] **Versioning** if breaking changes
-- [ ] **OpenAPI documentation** updated
+- [ ] **Result Pattern** used effectively instead of throwing exceptions for control flow
+- [ ] **DTOs** used for data transfer instead of domain entities directly
+- [ ] **Clear method signatures** (intention-revealing)
+- [ ] **No UI logic** leaking into Application/Domain services
+- [ ] **CancellationTokens** passed down the stack
 
 ### 8. Database
 

@@ -5,7 +5,7 @@
 ### Setup in Program.cs
 
 ```csharp
-// Using Serilog.AspNetCore
+// Program.cs
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
@@ -14,9 +14,9 @@ Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
     .Enrich.WithMachineName()
     .Enrich.WithEnvironmentName()
-    .Enrich.WithCorrelationId()
+    .Enrich.WithThreadId()
     .WriteTo.Console(outputTemplate: 
-        "[{Timestamp:HH:mm:ss} {Level:u3}] {CorrelationId} {Message:lj}{NewLine}{Exception}")
+        "[{Timestamp:HH:mm:ss} {Level:u3}] [{ThreadId}] {Message:lj}{NewLine}{Exception}")
     .WriteTo.File(
         path: "logs/log-.txt",
         rollingInterval: RollingInterval.Day,
@@ -26,14 +26,19 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
-    Log.Information("Starting application");
+    Log.Information("Starting Desktop Application");
     
-    var builder = WebApplication.CreateBuilder(args);
-    builder.Host.UseSerilog();
+    ApplicationConfiguration.Initialize();
     
-    // ... rest of setup
+    var host = Host.CreateDefaultBuilder()
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
+        {
+            // Register Windows Forms dependencies
+        })
+        .Build();
     
-    app.Run();
+    Application.Run(host.Services.GetRequiredService<MainForm>());
 }
 catch (Exception ex)
 {
@@ -108,42 +113,31 @@ _logger.LogCritical(exception, "Database connection lost. Application shutting d
 
 ## Correlation IDs
 
-### Request Correlation Middleware
+### Operation Correlation via Scope
+
+In a desktop context, instead of HTTP requests, you wrap logical operations or UI flows in a logging scope to track their logs together:
 
 ```csharp
-public class CorrelationIdMiddleware(RequestDelegate next)
+// Example in a Presenter
+private async void OnProcessOrderClicked(object sender, EventArgs e)
 {
-    private const string CorrelationIdHeader = "X-Correlation-Id";
-
-    public async Task InvokeAsync(HttpContext context)
+    var operationId = Guid.NewGuid().ToString("N")[..8];
+    
+    using (LogContext.PushProperty("CorrelationId", operationId))
     {
-        var correlationId = GetOrCreateCorrelationId(context);
+        _logger.LogInformation("User initiated order processing");
         
-        // Add to response headers
-        context.Response.OnStarting(() =>
+        try
         {
-            context.Response.Headers[CorrelationIdHeader] = correlationId;
-            return Task.CompletedTask;
-        });
-
-        // Add to log context
-        using (LogContext.PushProperty("CorrelationId", correlationId))
+            await _sender.Send(new ProcessOrderCommand(OrderId));
+        }
+        catch (Exception ex)
         {
-            await next(context);
+            _logger.LogError(ex, "Order processing failed");
+            _view.ShowError("Failed to process order.");
         }
     }
-
-    private static string GetOrCreateCorrelationId(HttpContext context)
-    {
-        if (context.Request.Headers.TryGetValue(CorrelationIdHeader, out var id))
-            return id.ToString();
-
-        return Guid.NewGuid().ToString("N")[..8];
-    }
 }
-
-// Register before other middleware
-app.UseMiddleware<CorrelationIdMiddleware>();
 ```
 
 ## Structured Logging Best Practices
@@ -204,30 +198,29 @@ _logger.LogInformation("Order created: {$Order}", order);
 })
 ```
 
-## Request Logging
+### User Action Logging
 
-### HTTP Request Logging Middleware
+In WinForms, you trace significant user actions rather than HTTP requests:
 
 ```csharp
-// Using Serilog.AspNetCore
-app.UseSerilogRequestLogging(options =>
+public static class ActionLogger
 {
-    options.MessageTemplate = 
-        "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000}ms";
-    
-    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    public static void LogUserAction(ILogger logger, string action, string feature)
     {
-        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
-        diagnosticContext.Set("UserAgent", httpContext.Request.Headers.UserAgent);
-        diagnosticContext.Set("UserId", httpContext.User?.Identity?.Name);
-    };
-    
-    options.GetLevel = (httpContext, elapsed, ex) => ex != null
-        ? LogEventLevel.Error
-        : httpContext.Response.StatusCode > 499
-            ? LogEventLevel.Error
-            : LogEventLevel.Information;
-});
+        var identity = WindowsIdentity.GetCurrent().Name;
+        
+        logger.LogInformation(
+            "UserAction: [{User}] performed [{Action}] in [{Feature}]",
+            identity, action, feature);
+    }
+}
+
+// Usage in Presenter/Form
+private void btnSave_Click(object sender, EventArgs e)
+{
+    ActionLogger.LogUserAction(_logger, "SaveButtonClicked", "Customer Profile");
+    // ...
+}
 ```
 
 ## Performance Logging

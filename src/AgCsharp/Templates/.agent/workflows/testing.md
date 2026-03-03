@@ -1,5 +1,5 @@
 ---
-description: A systematic workflow for writing and running tests in .NET applications. Covers test types (unit, integration, end-to-end) with purpose and isolation levels, identifying what to test and what to skip, writing unit tests using AAA pattern with xUnit (Facts and Theories), testing exceptions and parameterized scenarios, writing handler tests with Moq mocking and in-memory databases, creating integration tests using WebApplicationFactory, running tests with dotnet CLI commands, generating code coverage reports with reportgenerator, and organizing test projects. Includes coverage goals by layer and a comprehensive testing checklist.
+description: A systematic workflow for writing and running tests in .NET applications. Covers test types (unit, integration, end-to-end) with purpose and isolation levels, identifying what to test and what to skip, writing unit tests using AAA pattern with xUnit (Facts and Theories), testing exceptions and parameterized scenarios, writing handler tests with Moq mocking and in-memory databases, creating integration tests using generic hosts, running tests with dotnet CLI commands, generating code coverage reports with reportgenerator, and organizing test projects. Includes coverage goals by layer and a comprehensive testing checklist.
 ---
 
 # Workflow: Testing

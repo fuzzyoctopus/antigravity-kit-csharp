@@ -5,9 +5,9 @@ Vertical Slice Architecture organizes code by feature rather than by technical l
 
 ```
 Traditional (Horizontal):          Vertical Slice:
-├── Controllers/                   ├── Features/
-│   ├── CustomersController.cs     │   ├── Customers/
-│   └── OrdersController.cs        │   │   ├── GetCustomer.cs
+├── Forms/                         ├── Features/
+│   ├── CustomerListForm.cs        │   ├── Customers/
+│   └── OrderForm.cs               │   │   ├── GetCustomer.cs
 ├── Services/                      │   │   ├── CreateCustomer.cs
 │   ├── CustomerService.cs         │   │   └── DeleteCustomer.cs
 │   └── OrderService.cs            │   └── Orders/
@@ -23,18 +23,18 @@ Traditional (Horizontal):          Vertical Slice:
 
 ```
 src/
-├── MyApp.Api/
+├── MyApp.Desktop/
 │   ├── Features/
 │   │   ├── Customers/
 │   │   │   ├── GetCustomer.cs         # Query + Handler + Response
 │   │   │   ├── GetCustomers.cs        # List query
 │   │   │   ├── CreateCustomer.cs      # Command + Handler + Request
-│   │   │   ├── UpdateCustomer.cs
-│   │   │   └── DeleteCustomer.cs
+│   │   │   ├── CustomerListForm.cs    # Presenter + View
+│   │   │   └── CustomerDetailForm.cs
 │   │   ├── Orders/
 │   │   │   ├── CreateOrder.cs
 │   │   │   ├── GetOrder.cs
-│   │   │   └── CancelOrder.cs
+│   │   │   └── OrderForm.cs
 │   │   └── Products/
 │   │       └── ...
 │   ├── Common/
@@ -44,8 +44,8 @@ src/
 │   │   ├── Exceptions/
 │   │   ├── Extensions/
 │   │   └── Models/
-│   ├── Endpoints/
-│   │   └── EndpointExtensions.cs      # Minimal API mapping
+│   ├── Configuration/
+│   │   └── FeatureExtensions.cs       # DI Mapping
 │   └── Program.cs
 │
 ├── MyApp.Domain/                       # Shared domain entities
@@ -98,23 +98,25 @@ public static class GetCustomer
         }
     }
 
-    // Endpoint mapping
-    public static void MapEndpoint(IEndpointRouteBuilder app)
+    // Presenter Integration
+    public class Presenter
     {
-        app.MapGet("/api/customers/{id:int}", async (
-            int id,
-            ISender sender,
-            CancellationToken cancellationToken) =>
+        private readonly IView _view;
+        private readonly ISender _sender;
+
+        public Presenter(IView view, ISender sender)
         {
-            var result = await sender.Send(new Query(id), cancellationToken);
-            return result.IsSuccess
-                ? Results.Ok(result.Value)
-                : Results.NotFound(result.Error);
-        })
-        .WithName("GetCustomer")
-        .WithTags("Customers")
-        .Produces<Response>()
-        .ProducesProblem(StatusCodes.Status404NotFound);
+            _view = view;
+            _sender = sender;
+            _view.LoadRequested += OnLoadRequested;
+        }
+
+        private async void OnLoadRequested(object sender, int id)
+        {
+            var result = await _sender.Send(new Query(id));
+            if (result.IsSuccess)
+                _view.ShowCustomer(result.Value);
+        }
     }
 }
 ```
@@ -170,61 +172,62 @@ public static class CreateCustomer
         }
     }
 
-    // Endpoint mapping
-    public static void MapEndpoint(IEndpointRouteBuilder app)
+    // Presenter Integration
+    public class Presenter
     {
-        app.MapPost("/api/customers", async (
-            Request request,
-            ISender sender,
-            CancellationToken cancellationToken) =>
+        private readonly IView _view;
+        private readonly ISender _sender;
+
+        public Presenter(IView view, ISender sender)
+        {
+            _view = view;
+            _sender = sender;
+            _view.SaveRequested += OnSaveRequested;
+        }
+
+        private async void OnSaveRequested(object sender, Request request)
         {
             var command = new Command(request.Name, request.Email);
-            var result = await sender.Send(command, cancellationToken);
-
-            return result.IsSuccess
-                ? Results.CreatedAtRoute("GetCustomer", 
-                    new { id = result.Value }, 
-                    new { id = result.Value })
-                : Results.BadRequest(result.Error);
-        })
-        .WithName("CreateCustomer")
-        .WithTags("Customers")
-        .ProducesValidationProblem()
-        .Produces(StatusCodes.Status201Created);
+            var result = await _sender.Send(command);
+            
+            if (result.IsSuccess)
+                _view.ShowSuccess($"Customer {result.Value} created.");
+            else
+                _view.ShowError(result.Error);
+        }
     }
 }
 ```
 
-## Endpoint Registration
+## DI Registration
 
 ```csharp
-// Endpoints/EndpointExtensions.cs
-namespace MyApp.Endpoints;
+// Configuration/FeatureExtensions.cs
+namespace MyApp.Configuration;
 
-public static class EndpointExtensions
+public static class FeatureExtensions
 {
-    public static WebApplication MapFeatureEndpoints(this WebApplication app)
+    public static IServiceCollection AddFeatureForms(this IServiceCollection services)
     {
         // Customers
-        GetCustomer.MapEndpoint(app);
-        GetCustomers.MapEndpoint(app);
-        CreateCustomer.MapEndpoint(app);
-        UpdateCustomer.MapEndpoint(app);
-        DeleteCustomer.MapEndpoint(app);
-
+        services.AddTransient<Features.Customers.CustomerListForm>();
+        services.AddTransient<Features.Customers.CreateCustomerForm>();
+        
         // Orders
-        CreateOrder.MapEndpoint(app);
-        GetOrder.MapEndpoint(app);
-        CancelOrder.MapEndpoint(app);
+        services.AddTransient<Features.Orders.OrderForm>();
 
-        return app;
+        return services;
     }
 }
 
 // Program.cs
-var app = builder.Build();
-app.MapFeatureEndpoints();
-app.Run();
+var host = Host.CreateDefaultBuilder()
+    .ConfigureServices((context, services) =>
+    {
+        services.AddFeatureForms();
+        services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
+    })
+    .Build();
 ```
 
 ## With MediatR Pipeline Behaviors
@@ -271,7 +274,7 @@ public class ValidationBehavior<TRequest, TResponse>(
 ## When to Use
 
 ### Use Vertical Slice When:
-- Building APIs with distinct features
+- Building Desktop Modules with distinct screens/features
 - Team works on features independently
 - CRUD operations dominate
 - Rapid development is priority
@@ -279,5 +282,5 @@ public class ValidationBehavior<TRequest, TResponse>(
 ### Consider Clean Architecture When:
 - Complex domain logic
 - Shared business rules across features
-- Multiple presentation layers (API + Web + Mobile)
+- Multiple presentation layers (Desktop + Web API)
 - Long-term maintainability is critical

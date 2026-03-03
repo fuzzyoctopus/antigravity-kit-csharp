@@ -39,7 +39,7 @@ System.InvalidOperationException: Sequence contains no elements
    at System.Linq.ThrowHelper.ThrowNoElementsException()
    at System.Linq.Enumerable.First[TSource](IEnumerable`1 source)
    at MyApp.Application.Services.OrderService.GetLatestOrderAsync(Int32 customerId) in OrderService.cs:line 45
-   at MyApp.Api.Controllers.OrdersController.GetLatest(Int32 customerId) in OrdersController.cs:line 28
+   at MyApp.Presentation.Presenters.OrderPresenter.OnLoadRequested(Object sender, EventArgs e) in OrderPresenter.cs:line 28
 ```
 
 ### How to Read It
@@ -47,7 +47,7 @@ System.InvalidOperationException: Sequence contains no elements
 2. **Message**: `Sequence contains no elements` - the specific issue
 3. **Top of stack**: Where the exception was thrown (Linq.First)
 4. **Your code**: First line in your namespace (OrderService.cs:line 45)
-5. **Entry point**: How it got there (Controller)
+5. **Entry point**: How it got there (Presenter/Event Handler)
 
 ### Common Exception Types
 

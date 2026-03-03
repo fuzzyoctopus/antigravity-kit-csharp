@@ -233,7 +233,7 @@ public record OrderDto(
 3. EF Core configurations
 4. Repository implementations
 5. Application handlers
-6. API endpoints
+6. UI Forms and Presenters
 7. Integration events
 
 ### Continuous Refinement
